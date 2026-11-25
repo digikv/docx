@@ -320,11 +320,30 @@ ENDIF
 | `visible` | `.F.`: a signature without a picture on the page |
 | `border`, `background` | the frame (`.T.`), a white field under the text (`.F.`) |
 | `fontsize`, `size` | the font size (0: what fits), the room for the signature in bytes (20000) |
+| `image` | a picture with the signature: a JPEG or PNG file (PNG with transparency too; 8 bits, not interlaced) |
+| `imagepos` | `"left"` (default) or `"right"`: the picture as high as the signature, beside the text; `"back"`: under the text, over the whole signature |
+
+```harbour
+PDF_Sign( "report.pdf", "report_signed.pdf", { "image" => "stamp.png", "imagepos" => "left", ;
+          "width" => 90, "height" => 22, "reason" => "Approval" }, @cErr )
+```
 
 `PDF_Certificates()` lists the personal certificates of Windows: `{ cThumbprint, cName, cIssuer, cValidTo, lHasKey }`.
 In Serbia: the certificate of the ID card (MUP) or of a token (Pošta, Halcom, PKS, E-Smart ...) is in the
 Windows store once the middleware of its issuer is installed, and is chosen and used like any other (Windows
 asks for the PIN). The cloud signature of eUprava (ConsentID) is not in the store and cannot be used here.
+
+A reader checks two things: that the PDF was not changed after signing (the signature itself), and that
+it trusts the certificate. "Signature is invalid / the certificate of the signer is invalid" with a
+certificate that is valid usually means the second: the reader does not trust its root, or cannot check
+whether it was revoked. In Adobe Acrobat: Preferences - Signatures - Verification - Windows Integration,
+"Trust all root certificates in the Windows Certificate Store" for validating signatures (the root of a
+national PKI - ICP-Brasil, MUP Srbije ... - is there once its middleware is installed), or import the root
+under Identities & Trusted Certificates as a trusted root. The signature panel (Signature Properties -
+Show Signer's Certificate - Trust / Revocation) tells the exact reason.
+
+`pdfsignw.c` also compiles with old Platform SDK headers (Borland bcc32 5.8, old MinGW): what they lack is
+defined there.
 
 Not done: encrypted PDFs; the text of the signature is Helvetica (the letters of Western Europe and
 č ć đ š ž, no Cyrillic); the `/Rotate` of a page is not taken into account; no time stamp server (the time

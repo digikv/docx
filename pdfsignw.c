@@ -27,9 +27,48 @@
 
 #if defined( HB_OS_WIN )
 
+/* old headers hide CertGetNameString, PFXImportCertStore... below Windows 2000/XP */
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT  0x0501
+#endif
 #define CMSG_SIGNER_ENCODE_INFO_HAS_CMS_FIELDS
+#include <stdio.h>
+#include <string.h>
+#include <wchar.h>
 #include <windows.h>
 #include <wincrypt.h>
+
+/* Compatibility with old Platform SDK headers (Borland bcc32 5.8 / C++Builder 2006-2007,
+   old MinGW): what is missing there is defined here. With a current SDK nothing changes. */
+
+/* handle of a key: HCRYPTPROV (CAPI) or NCRYPT_KEY_HANDLE (CNG), both of the size of a pointer (HCRYPTPROV exists in every header).
+   Own type, because HCRYPTPROV_OR_NCRYPT_KEY_HANDLE does not exist in old headers */
+typedef HCRYPTPROV PDFS_KEYHANDLE;
+
+#ifndef CERT_NCRYPT_KEY_SPEC
+#define CERT_NCRYPT_KEY_SPEC  0xFFFFFFFF
+#endif
+#ifndef szOID_NIST_sha256
+#define szOID_NIST_sha256  "2.16.840.1.101.3.4.2.1"
+#endif
+#ifndef CRYPT_ACQUIRE_CACHE_FLAG
+#define CRYPT_ACQUIRE_CACHE_FLAG  0x00000001
+#endif
+#ifndef CERT_NAME_SIMPLE_DISPLAY_TYPE
+#define CERT_NAME_SIMPLE_DISPLAY_TYPE  4
+#endif
+#ifndef CERT_NAME_RDN_TYPE
+#define CERT_NAME_RDN_TYPE  2
+#endif
+#ifndef CERT_NAME_ISSUER_FLAG
+#define CERT_NAME_ISSUER_FLAG  0x1
+#endif
+#ifndef CERT_X500_NAME_STR
+#define CERT_X500_NAME_STR  3
+#endif
+#ifndef CRYPT_SILENT
+#define CRYPT_SILENT  0x00000040
+#endif
 
 #ifndef PKCS12_NO_PERSIST_KEY
 #define PKCS12_NO_PERSIST_KEY  0x00008000
@@ -193,14 +232,14 @@ static PCCERT_CONTEXT s_getCert( const char * szThumb, const char * szPfx, const
    .pfx files); a CAPI key of a Microsoft software provider (Base / Strong / Enhanced,
    PROV_RSA_FULL: no SHA-256, error NTE_BAD_TYPE) is opened again in the same container
    of the "Enhanced RSA and AES" provider, which has SHA-256 (*phAes: to release) */
-static HB_BOOL s_getKey( PCCERT_CONTEXT pCert, HCRYPTPROV_OR_NCRYPT_KEY_HANDLE * phKey, DWORD * pdwKeySpec, HCRYPTPROV * phAes )
+static HB_BOOL s_getKey( PCCERT_CONTEXT pCert, PDFS_KEYHANDLE * phKey, DWORD * pdwKeySpec, HCRYPTPROV * phAes )
 {
    BOOL fFree = FALSE;
    DWORD cb = 0;
 
    *phAes = 0;
    if( ! CryptAcquireCertificatePrivateKey( pCert, CRYPT_ACQUIRE_PREFER_NCRYPT_KEY_FLAG | CRYPT_ACQUIRE_CACHE_FLAG,
-                                            NULL, phKey, pdwKeySpec, &fFree ) )
+                                            NULL, ( void * ) phKey, pdwKeySpec, &fFree ) )
       return HB_FALSE;
    if( *pdwKeySpec != CERT_NCRYPT_KEY_SPEC &&
        CertGetCertificateContextProperty( pCert, CERT_KEY_PROV_INFO_PROP_ID, NULL, &cb ) && cb > 0 )
@@ -252,7 +291,7 @@ HB_FUNC( PDFS_CERTS )
 }
 
 /* PDFS_SELECTCERT( cTitle, cText ) -> thumbprint of the certificate the user chose, "" = cancelled */
-typedef PCCERT_CONTEXT ( WINAPI * PSELECTCERT )( HCERTSTORE, HWND, LPCWSTR, LPCWSTR, DWORD, DWORD, void * );
+typedef PCCERT_CONTEXT ( WINAPI * PDFS_PSELECTCERT )( HCERTSTORE, HWND, LPCWSTR, LPCWSTR, DWORD, DWORD, void * );
 
 HB_FUNC( PDFS_SELECTCERT )
 {
@@ -261,7 +300,7 @@ HB_FUNC( PDFS_SELECTCERT )
    szHex[ 0 ] = 0;
    if( hLib )
    {
-      PSELECTCERT pSelect = ( PSELECTCERT ) ( void * ) GetProcAddress( hLib, "CryptUIDlgSelectCertificateFromStore" );
+      PDFS_PSELECTCERT pSelect = ( PDFS_PSELECTCERT ) ( void * ) GetProcAddress( hLib, "CryptUIDlgSelectCertificateFromStore" );
       HCERTSTORE hStore = CertOpenStore( CERT_STORE_PROV_SYSTEM_W, 0, 0, CERT_SYSTEM_STORE_CURRENT_USER | CERT_STORE_READONLY_FLAG, L"MY" );
       if( pSelect && hStore )
       {
@@ -328,7 +367,7 @@ HB_FUNC( PDFS_SIGN )
    pCert = s_getCert( hb_parc( 2 ), hb_parc( 3 ), hb_parc( 4 ), &hStore, szErr, sizeof( szErr ) );
    if( pCert )
    {
-      HCRYPTPROV_OR_NCRYPT_KEY_HANDLE hKey = 0;
+      PDFS_KEYHANDLE hKey = 0;
       DWORD dwKeySpec = 0;
       HCRYPTPROV hAes = 0;
 

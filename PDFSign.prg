@@ -38,6 +38,9 @@
  *   "border"    .F.: bez okvira
  *   "background"  .T.: belo polje ispod teksta (kad je potpis preko teksta strane)
  *   "size"      mesto za potpis u bajtovima (podrazumevano 20000)
+ *   "image"     slika uz potpis: JPEG ili PNG fajl (PNG i sa providnoscu)
+ *   "imagepos"  "left" (podrazumevano) / "right": slika u visini potpisa levo / desno
+ *               od teksta; "back": slika ispod teksta, preko celog potpisa
  *
  * Ogranicenja: sifrovani PDF se ne potpisuje; tekst potpisa je Helvetica
  * (latinica zapadne Evrope i č ć đ š ž, bez cirilice); /Rotate strane se ne
@@ -57,6 +60,7 @@ FUNCTION PDF_Sign( cIn, cOut, hOpt, cErr )
    LOCAL cAF, nAF, cFields, nFields, cAnnots, nAnnots, cAp, cSigDict, cWid, cDate, dNow
    LOCAL nSize, cAll, nBR, nCt, nA, nB, cDer, cHex, cBR, lVisible, aLines, nFs, cOld
    LOCAL nPrevXref, lStream, cTrailer
+   LOCAL hImg, nImg, nSMask, cImgPos, nIw, nIh, nIx, nIy, nTx := 3, nTextW, cImgOps := ""
 
    cErr := ""
    hOpt := IIF( HB_ISHASH( hOpt ), hOpt, { => } )
@@ -149,6 +153,17 @@ FUNCTION PDF_Sign( cIn, cOut, hOpt, cErr )
    nAP := nNext++
    nFont := nNext++
 
+   /* a picture with the signature (JPEG / PNG) */
+   IF lVisible .AND. ! Empty( hb_HGetDef( hOpt, "image", "" ) )
+      IF ( hImg := _PS_Image( hOpt[ "image" ], @cErr ) ) == NIL
+         RETURN .F.
+      ENDIF
+      nImg := nNext++
+      IF hImg[ "smask" ] != NIL
+         nSMask := nNext++
+      ENDIF
+   ENDIF
+
    /* the signature: the place of /Contents is filled after the bytes are known */
    nSize := Max( 8000, hb_HGetDef( hOpt, "size", 20000 ) )
    cSigDict := "<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached" + ;
@@ -177,15 +192,56 @@ FUNCTION PDF_Sign( cIn, cOut, hOpt, cErr )
          AAdd( aLines, cOld )
       ENDIF
    NEXT
+   /* the picture: its place in the frame (the proportions kept), the text beside it */
+   nTextW := nW - 6
+   IF hImg != NIL
+      cImgPos := Lower( AllTrim( hb_HGetDef( hOpt, "imagepos", "left" ) ) )
+      IF cImgPos == "back"
+         nIw := Min( ( nW - 2 ) / hImg[ "w" ], ( nH - 2 ) / hImg[ "h" ] )
+         nIh := hImg[ "h" ] * nIw
+         nIw := hImg[ "w" ] * nIw
+         nIx := ( nW - nIw ) / 2
+      ELSE
+         nIh := nH - 4
+         nIw := nIh * hImg[ "w" ] / hImg[ "h" ]
+         IF nIw > nW / 2
+            nIw := nW / 2
+            nIh := nIw * hImg[ "h" ] / hImg[ "w" ]
+         ENDIF
+         nTextW := nW - nIw - 9
+         IF cImgPos == "right"
+            nIx := nW - 2 - nIw
+         ELSE
+            nIx := 2
+            nTx := nIx + nIw + 3
+         ENDIF
+      ENDIF
+      nIy := ( nH - nIh ) / 2
+      cImgOps := "q " + _PS_N( nIw ) + " 0 0 " + _PS_N( nIh ) + " " + _PS_N( nIx ) + " " + _PS_N( nIy ) + " cm /Im1 Do Q" + Chr( 10 )
+      AAdd( aObj, { nImg, "<< /Type /XObject /Subtype /Image /Width " + hb_ntos( hImg[ "w" ] ) + ;
+                          " /Height " + hb_ntos( hImg[ "h" ] ) + " " + hImg[ "dict" ] + ;
+                          IIF( nSMask == NIL, "", " /SMask " + hb_ntos( nSMask ) + " 0 R" ) + ;
+                          " /Length " + hb_ntos( hb_BLen( hImg[ "data" ] ) ) + " >>" + Chr( 10 ) + ;
+                          "stream" + Chr( 10 ) + hImg[ "data" ] + Chr( 10 ) + "endstream" } )
+      IF nSMask != NIL
+         AAdd( aObj, { nSMask, "<< /Type /XObject /Subtype /Image /Width " + hb_ntos( hImg[ "w" ] ) + ;
+                               " /Height " + hb_ntos( hImg[ "h" ] ) + " /ColorSpace /DeviceGray /BitsPerComponent 8" + ;
+                               " /Filter /FlateDecode /Length " + hb_ntos( hb_BLen( hImg[ "smask" ] ) ) + " >>" + Chr( 10 ) + ;
+                               "stream" + Chr( 10 ) + hImg[ "smask" ] + Chr( 10 ) + "endstream" } )
+      ENDIF
+   ENDIF
    nFs := hb_HGetDef( hOpt, "fontsize", 0 )
    IF nFs <= 0 .AND. lVisible
       nFs := Min( 9, ( nH - 4 ) / ( Max( 1, Len( aLines ) ) * 1.2 ) )
-      AEval( aLines, {| x | nFs := Min( nFs, ( nW - 6 ) / Max( 1, Len( x ) * 0.52 ) ) } )
+      AEval( aLines, {| x | nFs := Min( nFs, Max( 1, nTextW ) / Max( 1, Len( x ) * 0.52 ) ) } )
       nFs := Max( 3, nFs )
    ENDIF
-   cAp := _PS_Appearance( aLines, nW, nH, nFs, hb_HGetDef( hOpt, "border", .T. ) .AND. lVisible, hb_HGetDef( hOpt, "background", .F. ) )
+   cAp := _PS_Appearance( aLines, nW, nH, nFs, hb_HGetDef( hOpt, "border", .T. ) .AND. lVisible, hb_HGetDef( hOpt, "background", .F. ), ;
+                          nTx, cImgOps )
    AAdd( aObj, { nAP, "<< /Type /XObject /Subtype /Form /BBox [0 0 " + _PS_N( nW ) + " " + _PS_N( nH ) + "]" + ;
-                      " /Resources << /Font << /F1 " + hb_ntos( nFont ) + " 0 R >> >> /Length " + hb_ntos( hb_BLen( cAp ) ) + ;
+                      " /Resources << /Font << /F1 " + hb_ntos( nFont ) + " 0 R >>" + ;
+                      IIF( nImg == NIL, "", " /XObject << /Im1 " + hb_ntos( nImg ) + " 0 R >>" ) + ;
+                      " >> /Length " + hb_ntos( hb_BLen( cAp ) ) + ;
                       " >>" + Chr( 10 ) + "stream" + Chr( 10 ) + cAp + Chr( 10 ) + "endstream" } )
    /* WinAnsi, and in its unused codes the letters of Serbian / Croatian it has not (c c d) */
    AAdd( aObj, { nFont, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /Type /Encoding" + ;
@@ -980,7 +1036,7 @@ STATIC FUNCTION _PS_BEStr( n, nLen )
 RETURN c
 
 /* the appearance of the signature: a frame and the lines of text */
-STATIC FUNCTION _PS_Appearance( aLines, nW, nH, nFs, lBorder, lBack )
+STATIC FUNCTION _PS_Appearance( aLines, nW, nH, nFs, lBorder, lBack, nTx, cImgOps )
 
    LOCAL c := "", cLine, nY, nLead := nFs * 1.2
 
@@ -990,17 +1046,185 @@ STATIC FUNCTION _PS_Appearance( aLines, nW, nH, nFs, lBorder, lBack )
    IF lBack
       c += "q 1 g 0 0 " + _PS_N( nW ) + " " + _PS_N( nH ) + " re f Q" + Chr( 10 )
    ENDIF
+   c += hb_defaultValue( cImgOps, "" )
    IF lBorder
       c += "q 0.6 w 0.25 0.25 0.25 RG 0.5 0.5 " + _PS_N( nW - 1 ) + " " + _PS_N( nH - 1 ) + " re S Q" + Chr( 10 )
    ENDIF
    nY := nH - 2 - nFs
-   c += "BT /F1 " + _PS_N( nFs ) + " Tf 0 g " + _PS_N( nLead ) + " TL 3 " + _PS_N( nY ) + " Td" + Chr( 10 )
+   c += "BT /F1 " + _PS_N( nFs ) + " Tf 0 g " + _PS_N( nLead ) + " TL " + _PS_N( hb_defaultValue( nTx, 3 ) ) + " " + _PS_N( nY ) + " Td" + Chr( 10 )
    FOR EACH cLine IN aLines
       c += IIF( cLine:__enumIndex() == 1, "", "T* " ) + "(" + _PS_WinAnsi( cLine ) + ") Tj" + Chr( 10 )
    NEXT
    c += "ET"
 
 RETURN c
+
+/* the picture of the signature: a JPEG or PNG file -> { "w", "h", "dict" (ColorSpace,
+   BitsPerComponent, Filter ...), "data" (the stream), "smask" (PNG alpha, Flate, or NIL) };
+   NIL and cErr when it cannot be used */
+STATIC FUNCTION _PS_Image( cFile, cErr )
+
+   LOCAL c := hb_MemoRead( cFile )
+
+   IF hb_BLen( c ) < 24
+      cErr := "Image not found or empty: " + cFile
+      RETURN NIL
+   ENDIF
+   IF hb_BPeek( c, 1 ) == 0xFF .AND. hb_BPeek( c, 2 ) == 0xD8
+      RETURN _PS_Jpeg( c, cFile, @cErr )
+   ENDIF
+   IF hb_BPeek( c, 1 ) == 0x89 .AND. hb_BSubStr( c, 2, 3 ) == "PNG"
+      RETURN _PS_Png( c, cFile, @cErr )
+   ENDIF
+   cErr := "The image must be JPEG or PNG: " + cFile
+
+RETURN NIL
+
+/* JPEG goes into the PDF as it is (DCTDecode): the size and colors from its SOF marker */
+STATIC FUNCTION _PS_Jpeg( c, cFile, cErr )
+
+   LOCAL p := 3, nM, nLen := hb_BLen( c ), nComp, cCs
+
+   DO WHILE p + 9 <= nLen .AND. hb_BPeek( c, p ) == 0xFF
+      nM := hb_BPeek( c, p + 1 )
+      IF nM == 0xFF                     /* fill byte */
+         p++
+         LOOP
+      ENDIF
+      IF nM >= 0xC0 .AND. nM <= 0xCF .AND. nM != 0xC4 .AND. nM != 0xC8 .AND. nM != 0xCC
+         nComp := hb_BPeek( c, p + 9 )
+         DO CASE
+         CASE nComp == 1 ; cCs := "/ColorSpace /DeviceGray"
+         CASE nComp == 3 ; cCs := "/ColorSpace /DeviceRGB"
+         CASE nComp == 4 ; cCs := "/ColorSpace /DeviceCMYK /Decode [1 0 1 0 1 0 1 0]"   /* Adobe CMYK */
+         OTHERWISE
+            EXIT
+         ENDCASE
+         RETURN { "w" => _PS_BE( c, p + 7, 2 ), "h" => _PS_BE( c, p + 5, 2 ), ;
+                  "dict" => cCs + " /BitsPerComponent 8 /Filter /DCTDecode", "data" => c, "smask" => NIL }
+      ENDIF
+      p += 2 + _PS_BE( c, p + 2, 2 )
+   ENDDO
+   cErr := "JPEG not understood: " + cFile
+
+RETURN NIL
+
+/* PNG: gray, RGB and palette go in with their own compression (Flate with the PNG
+   predictor); with alpha (gray + alpha, RGBA) the pixels are unpacked and the alpha
+   becomes the soft mask. 8 bits (palette and gray also 1, 2, 4), not interlaced. */
+STATIC FUNCTION _PS_Png( c, cFile, cErr )
+
+   LOCAL p := 9, nLen := hb_BLen( c ), nCl, cType, nW := 0, nH := 0, nBits := 0, nCt := -1, nLace := 0
+   LOCAL cIdat := "", cPlte := "", nColors, cRaw, cPix, cAlpha, nBpp, nRow, nX, cCs, nPix
+
+   DO WHILE p + 8 <= nLen
+      nCl := _PS_BE( c, p, 4 )
+      cType := hb_BSubStr( c, p + 4, 4 )
+      IF cType == "IHDR"
+         nW := _PS_BE( c, p + 8, 4 )
+         nH := _PS_BE( c, p + 12, 4 )
+         nBits := hb_BPeek( c, p + 16 )
+         nCt := hb_BPeek( c, p + 17 )
+         nLace := hb_BPeek( c, p + 20 )
+      ELSEIF cType == "PLTE"
+         cPlte := hb_BSubStr( c, p + 8, nCl )
+      ELSEIF cType == "IDAT"
+         cIdat += hb_BSubStr( c, p + 8, nCl )
+      ELSEIF cType == "IEND"
+         EXIT
+      ENDIF
+      p += 12 + nCl
+   ENDDO
+   IF nW <= 0 .OR. nH <= 0 .OR. Empty( cIdat ) .OR. nLace != 0 .OR. ;
+      hb_AScan( { 0, 2, 3, 4, 6 }, nCt ) == 0 .OR. nBits > 8 .OR. ( nBits != 8 .AND. ! ( nCt == 0 .OR. nCt == 3 ) )
+      cErr := "PNG not supported (8 bits, not interlaced): " + cFile
+      RETURN NIL
+   ENDIF
+
+   IF nCt == 0 .OR. nCt == 2 .OR. nCt == 3
+      nColors := IIF( nCt == 2, 3, 1 )
+      DO CASE
+      CASE nCt == 0 ; cCs := "/ColorSpace /DeviceGray"
+      CASE nCt == 2 ; cCs := "/ColorSpace /DeviceRGB"
+      OTHERWISE
+         IF Empty( cPlte )
+            cErr := "PNG without a palette: " + cFile
+            RETURN NIL
+         ENDIF
+         cCs := "/ColorSpace [/Indexed /DeviceRGB " + hb_ntos( Int( hb_BLen( cPlte ) / 3 ) - 1 ) + " <" + hb_StrToHex( cPlte ) + ">]"
+      ENDCASE
+      RETURN { "w" => nW, "h" => nH, "data" => cIdat, "smask" => NIL, ;
+               "dict" => cCs + " /BitsPerComponent " + hb_ntos( nBits ) + " /Filter /FlateDecode" + ;
+                         " /DecodeParms << /Predictor 15 /Colors " + hb_ntos( nColors ) + ;
+                         " /BitsPerComponent " + hb_ntos( nBits ) + " /Columns " + hb_ntos( nW ) + " >>" }
+   ENDIF
+
+   /* with alpha: unfilter the rows, then the colors and the alpha apart */
+   nBpp := IIF( nCt == 6, 4, 2 )
+   cRaw := hb_ZUncompress( cIdat, nH * ( 1 + nW * nBpp ) )
+   IF ! HB_ISSTRING( cRaw ) .OR. hb_BLen( cRaw ) < nH * ( 1 + nW * nBpp )
+      cErr := "PNG data damaged: " + cFile
+      RETURN NIL
+   ENDIF
+   cRaw := _PS_PngUnfilter( cRaw, nW * nBpp, nBpp, nH )
+   cPix := Replicate( Chr( 0 ), nW * nH * ( nBpp - 1 ) )
+   cAlpha := Replicate( Chr( 0 ), nW * nH )
+   FOR nRow := 0 TO nH - 1
+      FOR nX := 0 TO nW - 1
+         nPix := nRow * nW + nX
+         p := nPix * nBpp + 1
+         IF nBpp == 4
+            hb_BPoke( @cPix, nPix * 3 + 1, hb_BPeek( cRaw, p ) )
+            hb_BPoke( @cPix, nPix * 3 + 2, hb_BPeek( cRaw, p + 1 ) )
+            hb_BPoke( @cPix, nPix * 3 + 3, hb_BPeek( cRaw, p + 2 ) )
+         ELSE
+            hb_BPoke( @cPix, nPix + 1, hb_BPeek( cRaw, p ) )
+         ENDIF
+         hb_BPoke( @cAlpha, nPix + 1, hb_BPeek( cRaw, p + nBpp - 1 ) )
+      NEXT
+   NEXT
+
+RETURN { "w" => nW, "h" => nH, "data" => hb_ZCompress( cPix ), "smask" => hb_ZCompress( cAlpha ), ;
+         "dict" => IIF( nBpp == 4, "/ColorSpace /DeviceRGB", "/ColorSpace /DeviceGray" ) + ;
+                   " /BitsPerComponent 8 /Filter /FlateDecode" }
+
+/* PNG rows without their filter bytes, unfiltered (None, Sub, Up, Average, Paeth) */
+STATIC FUNCTION _PS_PngUnfilter( cRaw, nRowLen, nBpp, nRows )
+
+   LOCAL cOut := Replicate( Chr( 0 ), nRowLen * nRows ), nRow, i, nF, nA, nB, nC, nV, nIn, nOut, nP, pa, pb, pc
+
+   FOR nRow := 0 TO nRows - 1
+      nIn := nRow * ( nRowLen + 1 ) + 1
+      nF := hb_BPeek( cRaw, nIn )
+      nOut := nRow * nRowLen
+      FOR i := 1 TO nRowLen
+         nV := hb_BPeek( cRaw, nIn + i )
+         nA := IIF( i > nBpp, hb_BPeek( cOut, nOut + i - nBpp ), 0 )
+         nB := IIF( nRow > 0, hb_BPeek( cOut, nOut - nRowLen + i ), 0 )
+         nC := IIF( nRow > 0 .AND. i > nBpp, hb_BPeek( cOut, nOut - nRowLen + i - nBpp ), 0 )
+         SWITCH nF
+         CASE 1
+            nV += nA
+            EXIT
+         CASE 2
+            nV += nB
+            EXIT
+         CASE 3
+            nV += Int( ( nA + nB ) / 2 )
+            EXIT
+         CASE 4
+            nP := nA + nB - nC
+            pa := Abs( nP - nA )
+            pb := Abs( nP - nB )
+            pc := Abs( nP - nC )
+            nV += IIF( pa <= pb .AND. pa <= pc, nA, IIF( pb <= pc, nB, nC ) )
+            EXIT
+         ENDSWITCH
+         hb_BPoke( @cOut, nOut + i, nV % 256 )
+      NEXT
+   NEXT
+
+RETURN cOut
 
 /* a number for PDF: at most 2 decimals, a dot */
 STATIC FUNCTION _PS_N( n )
